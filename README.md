@@ -1,2 +1,2 @@
 # csapp
-To record my process in completing the labs of csapp
+To record my process of completing the labs of csapp
