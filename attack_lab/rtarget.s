@@ -134,13 +134,6 @@ Disassembly of section .plt:
 
 0000000000400de0 <munmap@plt>:
   400de0:	ff 25 d2 42 20 00    	jmp    *0x2042d2(%rip)        # 6050b8 <munmap@GLIBC_2.2.5>
-  400de6:	68 17 00 00 00       	push   $0x17
-  400deb:	e9 70 fe ff ff       	jmp    400c60 <.plt>
-
-0000000000400df0 <__printf_chk@plt>:
-  400df0:	ff 25 ca 42 20 00    	jmp    *0x2042ca(%rip)        # 6050c0 <__printf_chk@GLIBC_2.3.4>
-  400df6:	68 18 00 00 00       	push   $0x18
-  400dfb:	e9 60 fe ff ff       	jmp    400c60 <.plt>
 
 0000000000400e00 <fopen@plt>:
   400e00:	ff 25 c2 42 20 00    	jmp    *0x2042c2(%rip)        # 6050c8 <fopen@GLIBC_2.2.5>
