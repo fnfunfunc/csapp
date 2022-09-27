@@ -104,8 +104,30 @@ static void *address_order(void *bp, void *root);
 
 static void place(void *bp, size_t asize);
 
-void debug(char *msg) {
+static void debug(char *msg) {
   printf("\n%s\n", msg);
+  fflush(stdout);
+}
+
+static void print_listp(){
+	int ind;
+	void *node, *root;
+	printf("print listp\n");
+	for(ind=1;ind<=8;ind++){
+		node = listp+ind*WSIZE;
+		root = listp+ind*WSIZE;
+		printf("%d:\n",ind);
+		while(SUCC_BLKP(node)){
+			node = SUCC_BLKP(node);
+			printf("-->%p,%d",node, GET_SIZE(HDRP(node)));
+		}
+		printf("-->%p\n",SUCC_BLKP(node));
+		while(node!=root){
+			printf("<--%p,%d",node, GET_SIZE(HDRP(node)));
+			node = PRED_BLKP(node);
+		}
+		printf("<--%p\n",node);
+	}
   fflush(stdout);
 }
 
@@ -198,6 +220,8 @@ void *mm_realloc(void *ptr, size_t size) {
   size_t asize, new_bp_size;
   void *new_bp;
 
+
+
   /* 根据题目要求对特殊情况进行了判定 */
   if (ptr == NULL) {
     return mm_malloc(size);
@@ -230,6 +254,7 @@ void *mm_realloc(void *ptr, size_t size) {
       PUT(FTRP(NEXT_BLKP(new_bp)), PACK(remain_size, 0));
       add_block(NEXT_BLKP(new_bp));
     }
+    // place(new_bp, asize);
     return new_bp;
   } else { // 只能重新进行分配
     ptr = mm_malloc(asize);
@@ -254,8 +279,8 @@ static void *expend_heap(size_t words) {
   PUT(FTRP(bp), PACK(size, 0));         // 设置脚部
   PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); // 设置新的结尾块
 
-  PUT(PRED(bp), -1);
-  PUT(SUCC(bp), -1);
+  PUT(PRED(bp), NONE_BLKP);
+  PUT(SUCC(bp), NONE_BLKP);
   // 立即合并
   bp = imme_coalesce(bp); // 合并出一个新的空闲块
   bp = add_block(bp); // 再将这个新的空闲块加入到新的空闲链表中
@@ -363,8 +388,7 @@ static void *best_fit(size_t asize) {
 }
 
 static void place(void *bp, size_t asize) {
-  size_t remain_size;
-  remain_size = GET_SIZE(HDRP(bp)) - asize;
+  size_t remain_size = GET_SIZE(HDRP(bp)) - asize;
   delete_block(bp);
   if (remain_size >=
       DSIZE * 2) { // 如果剩余空间满足最小块的大小，就将其分割出一个新的空闲块
@@ -385,7 +409,9 @@ static void *add_block(void *bp) {
   void *root = listp + index * WSIZE; // 得到对应空闲链表的 root 指针
 
   // LIFO
-  return LIFO(bp, root);
+  // return LIFO(bp, root);
+  // address_order
+  return address_order(bp, root);
 }
 
 static void delete_block(void *bp) {
@@ -411,8 +437,8 @@ static int get_index_by_size(size_t size) {
 static void *LIFO(void *bp, void *root) {
   // 使用头插法进行插入
   if (SUCC_BLKP(root) != NONE_BLKP) { // 如果后继不为空
-    PUT(PRED(SUCC_BLKP(bp)), bp);
-    PUT(SUCC(bp), SUCC_BLKP(bp));
+    PUT(PRED(SUCC_BLKP(root)), bp);
+    PUT(SUCC(bp), SUCC_BLKP(root));
   } else {
     PUT(SUCC(bp), NONE_BLKP);
   }
@@ -438,7 +464,7 @@ static void *address_order(void *bp, void *root) {
     PUT(SUCC(bp), NONE_BLKP);
   } else {
     PUT(SUCC(PRED_BLKP(succ)), bp);
-    PUT(PRED(bp), PRED_BLKP(bp));
+    PUT(PRED(bp), PRED_BLKP(succ));
     PUT(SUCC(bp), succ);
     PUT(PRED(succ), bp);
   }

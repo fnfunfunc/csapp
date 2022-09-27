@@ -133,7 +133,7 @@ static void malloc_error(int tracenum, int opnum, char *msg);
 static void app_error(char *msg);
 
 /**************
- * Main routine
+ * Main: routine
  **************/
 int main(int argc, char **argv)
 {
