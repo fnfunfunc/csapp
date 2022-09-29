@@ -12,6 +12,9 @@
 
 #define HEADER_MAX_NUM 20
 
+#define THREAD_NUM 4
+#define SBUFSIZE 16
+
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr =
     "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 "
@@ -36,6 +39,16 @@ typedef struct {
   int header_num; // The number of headers
 } request;
 
+typedef struct {
+  int *buf;
+  int n; // Maximum numbers of slots
+  int front;
+  int rear;
+  sem_t mutex; // Mutex
+  sem_t slots; // Counts available slots
+  sem_t items; // Counts availabel items
+} sbuf_t;
+
 static void doit(int connfd);
 static void parse_url(char *uri, char *host, char *port, char *path);
 static void read_request(int fd, request *request);
@@ -46,11 +59,21 @@ static void forward_response(int connfd, int targetfd);
 
 static void sigpipe_handler(int sig);
 
+static void sbuf_init(sbuf_t *sp, int n);
+static void sbuf_deinit(sbuf_t *sp);
+static void sbuf_insert(sbuf_t *sp, int item);
+static int sbuf_remove(sbuf_t *sp);
+
+static void *thread(void *vargp);
+
+sbuf_t sbuf;
+
 int main(int argc, char **argv) {
   int listenfd, connfd;
   char hostname[MAXLINE], port[MAXLINE];
   struct sockaddr_storage clientaddr;
   socklen_t clientlen;
+  pthread_t tid;
 
   if (argc != 2) {
     fprintf(stderr, "usage: %s <port>\n", argv[0]);
@@ -60,14 +83,19 @@ int main(int argc, char **argv) {
   Signal(SIGPIPE, sigpipe_handler);
   listenfd = Open_listenfd(argv[1]);
 
+  sbuf_init(&sbuf, SBUFSIZE);
+
+  for (int i = 0; i < THREAD_NUM; ++i) { // Create work threads
+    Pthread_create(&tid, NULL, thread, NULL);
+  }
+
   while (true) {
     clientlen = sizeof(struct sockaddr_storage);
     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
     Getnameinfo((SA *)&clientaddr, clientlen, hostname, MAXLINE, port, MAXLINE,
                 0);
     printf("Accepted connection from (%s, %s)\n", hostname, port);
-    doit(connfd);
-    Close(connfd);
+    sbuf_insert(&sbuf, connfd); // Add connection to buffer
   }
   exit(0);
 }
@@ -75,6 +103,15 @@ int main(int argc, char **argv) {
 static void sigpipe_handler(int sig) {
   fprintf(stderr, "Receive signal: %d\n", sig);
   perror("Error: connection reset by peer\n");
+}
+
+static void *thread(void *vargp) {
+  Pthread_detach(Pthread_self());
+  while (true) {
+    int connfd = sbuf_remove(&sbuf);
+    doit(connfd);
+    Close(connfd);
+  }
 }
 
 static void doit(int connfd) {
@@ -95,7 +132,7 @@ static void read_request(int fd, request *request) {
   request_header *header = request->headers;
   request->header_num = 0;
   Rio_readlineb(&rio, buf, MAXLINE);
-  while (strcmp(buf, "\r\n")) { // read the headers
+  while (strcmp(buf, "\r\n")) { // read the headers, until the end line1
     read_request_header(&rio, buf, header++);
     request->header_num++;
     Rio_readlineb(&rio, buf, MAXLINE);
@@ -202,4 +239,34 @@ static void parse_url(char *uri, char *host, char *port, char *path) {
     strcpy(host, hostpose + 2);
   }
   return;
+}
+
+static void sbuf_init(sbuf_t *sp, int n) {
+  sp->buf = (int *)Calloc(n, sizeof(int));
+  sp->n = n;
+  sp->front = sp->rear = 0;
+  Sem_init(&sp->mutex, 0, 1);
+  Sem_init(&sp->slots, 0, n);
+  Sem_init(&sp->items, 0, 0);
+}
+
+static void sbuf_deinit(sbuf_t *sp) {
+  Free(sp->buf);
+}
+
+static void sbuf_insert(sbuf_t *sp, int item) {
+  sem_wait(&sp->slots); // Wait for available slots
+  sem_wait(&sp->mutex);
+  sp->buf[(++sp->rear) % sp->n] = item;
+  sem_post(&sp->mutex);
+  sem_post(&sp->items);
+}
+
+static int sbuf_remove(sbuf_t *sp) {
+  sem_wait(&sp->items); // Wait for available items'
+  sem_wait(&sp->mutex);
+  int item = sp->buf[(++sp->front) % sp->n];
+  sem_post(&sp->mutex);
+  sem_post(&sp->slots);
+  return item;
 }
