@@ -1,5 +1,4 @@
 #include "csapp.h"
-#include "tiny/csapp.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -10,7 +9,14 @@
 #define MAX_CACHE_SIZE 1049000 // 1M
 #define MAX_OBJECT_SIZE 102400 // 100KB
 
-#define HEADER_MAX_NUM 20
+#define MAX_METHOD_LEN 16
+#define HEADER_MAX_NUM 32
+#define MAX_HOST_LEN 2048
+#define MAX_PORT_LEN 8
+#define MAX_PATH_LEN 2048
+#define MAX_VERSION_LEN 16
+#define MAX_HEADER_NAME_LEN 32
+#define MAX_HEADER_VALUE_LEN 256
 
 #define THREAD_NUM 4
 #define SBUFSIZE 16
@@ -21,16 +27,16 @@ static const char *user_agent_hdr =
     "Firefox/10.0.3\r\n";
 
 typedef struct {
-  char method[MAXLINE];
-  char host[MAXLINE];
-  char port[MAXLINE];
-  char path[MAXLINE];
-  char version[MAXLINE];
+  char method[MAX_METHOD_LEN];
+  char host[MAX_HOST_LEN];
+  char port[MAX_PORT_LEN];
+  char path[MAX_PATH_LEN];
+  char version[MAX_VERSION_LEN];
 } request_line;
 
 typedef struct {
-  char name[MAXLINE];  // The name of request header
-  char value[MAXLINE]; // The value of request header
+  char name[MAX_HEADER_NAME_LEN];  // The name of request header
+  char value[MAX_HEADER_VALUE_LEN]; // The value of request header
 } request_header;
 
 typedef struct {
