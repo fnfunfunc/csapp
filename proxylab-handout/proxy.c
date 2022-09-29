@@ -7,8 +7,8 @@
 #include <string.h>
 
 /* Recommended max cache and object sizes */
-#define MAX_CACHE_SIZE 1049000
-#define MAX_OBJECT_SIZE 102400
+#define MAX_CACHE_SIZE 1049000 // 1M
+#define MAX_OBJECT_SIZE 102400 // 100KB
 
 #define HEADER_MAX_NUM 20
 
@@ -49,13 +49,26 @@ typedef struct {
   sem_t items; // Counts availabel items
 } sbuf_t;
 
+typedef struct {
+  int valid;                      // valid flag
+  char request[MAXLINE];          // request -- key
+  char response[MAX_OBJECT_SIZE]; // response -- value
+  int time_stamp;
+} cache_pair;
+
+typedef struct {
+  sem_t mutex;
+  cache_pair *cache_set;
+  int cache_pair_num;
+} cache_t;
+
 static void doit(int connfd);
 static void parse_url(char *uri, char *host, char *port, char *path);
 static void read_request(int fd, request *request);
 static void read_request_line(rio_t *rp, char *buf, request_line *request_line);
 static void read_request_header(rio_t *rp, char *buf, request_header *header);
 static int send_request(request *request);
-static void forward_response(int connfd, int targetfd);
+static void forward_response(int connfd, int targetfd, request *request);
 
 static void sigpipe_handler(int sig);
 
@@ -66,7 +79,13 @@ static int sbuf_remove(sbuf_t *sp);
 
 static void *thread(void *vargp);
 
+static void cache_init(cache_t *cache, int n);
+static int cache_find(cache_t *cache, request *request, int fd);
+static void cache_insert(cache_t *cache, request *request, char *response);
+
+int cur_time_stamp = 0;
 sbuf_t sbuf;
+cache_t cache;
 
 int main(int argc, char **argv) {
   int listenfd, connfd;
@@ -84,6 +103,7 @@ int main(int argc, char **argv) {
   listenfd = Open_listenfd(argv[1]);
 
   sbuf_init(&sbuf, SBUFSIZE);
+  cache_init(&cache, MAX_CACHE_SIZE / MAX_OBJECT_SIZE);
 
   for (int i = 0; i < THREAD_NUM; ++i) { // Create work threads
     Pthread_create(&tid, NULL, thread, NULL);
@@ -97,6 +117,7 @@ int main(int argc, char **argv) {
     printf("Accepted connection from (%s, %s)\n", hostname, port);
     sbuf_insert(&sbuf, connfd); // Add connection to buffer
   }
+  sbuf_deinit(&sbuf);
   exit(0);
 }
 
@@ -117,10 +138,11 @@ static void *thread(void *vargp) {
 static void doit(int connfd) {
   request request;
   read_request(connfd, &request); // read the message from client
-  int clientfd =
-      send_request(&request); // establish a new connection with target host
-  forward_response(connfd, clientfd); // forward the response to client
-  Close(clientfd);                    // Close the connection with target host
+  if (!cache_find(&cache, &request, connfd)) {
+    int clientfd = send_request(&request);
+    forward_response(connfd, clientfd, &request);
+    Close(clientfd);
+  }
 }
 
 static void read_request(int fd, request *request) {
@@ -132,7 +154,7 @@ static void read_request(int fd, request *request) {
   request_header *header = request->headers;
   request->header_num = 0;
   Rio_readlineb(&rio, buf, MAXLINE);
-  while (strcmp(buf, "\r\n")) { // read the headers, until the end line1
+  while (strcmp(buf, "\r\n")) { // read the headers, until the end line
     read_request_header(&rio, buf, header++);
     request->header_num++;
     Rio_readlineb(&rio, buf, MAXLINE);
@@ -202,13 +224,21 @@ static int send_request(request *request) {
   return clientfd;
 }
 
-static void forward_response(int connfd, int targetfd) {
+static void forward_response(int connfd, int targetfd, request *request) {
   rio_t rio;
   int n;
-  char buf[MAXLINE];
+  char buf[MAXLINE], content[MAX_OBJECT_SIZE];
+  int response_bytes = 0;
   Rio_readinitb(&rio, targetfd);
   while ((n = Rio_readlineb(&rio, buf, MAXLINE)) > 0) {
     Rio_writen(connfd, buf, n);
+    if (response_bytes + n <= MAX_OBJECT_SIZE) {
+      strcpy(content + response_bytes, buf);
+    }
+    response_bytes += n;
+  }
+  if (response_bytes <= MAX_OBJECT_SIZE) {
+    cache_insert(&cache, request, content);
   }
 }
 
@@ -250,9 +280,7 @@ static void sbuf_init(sbuf_t *sp, int n) {
   Sem_init(&sp->items, 0, 0);
 }
 
-static void sbuf_deinit(sbuf_t *sp) {
-  Free(sp->buf);
-}
+static void sbuf_deinit(sbuf_t *sp) { Free(sp->buf); }
 
 static void sbuf_insert(sbuf_t *sp, int item) {
   sem_wait(&sp->slots); // Wait for available slots
@@ -269,4 +297,72 @@ static int sbuf_remove(sbuf_t *sp) {
   sem_post(&sp->mutex);
   sem_post(&sp->slots);
   return item;
+}
+
+static void cache_init(cache_t *cache, int n) {
+  Sem_init(&cache->mutex, 0, 1);
+  cache->cache_set = (cache_pair *)Calloc(n, sizeof(cache_pair));
+  cache->cache_pair_num = n;
+}
+
+static int cache_find(cache_t *cache, request *request, int fd) {
+  request_line *request_line = &request->line;
+  char match_str[MAXLINE];
+  int cache_hit = 0; // The number of cache hits
+  cache_pair *cache_pair;
+  sprintf(match_str, "%s http://%s:%s%s HTTP/1.0", request_line->method,
+          request_line->host, request_line->port, request_line->path);
+  sem_wait(&cache->mutex);
+  for (int i = 0; i < cache->cache_pair_num; ++i) {
+    cache_pair = cache->cache_set + i;
+    if (!cache_pair->valid) { // invalid
+      continue;
+    }
+    if (!strcmp(cache_pair->request, match_str)) {
+      Rio_writen(fd, cache_pair->response,
+                 MAX_OBJECT_SIZE); // write to the connection of client
+      cache_pair->time_stamp = cur_time_stamp++;
+      cache_hit = 1;
+      break;
+    }
+  }
+  sem_post(&cache->mutex);
+  if (cache_hit) {
+    printf("Cache hit: http://%s:%s%s\n\n", request_line->host,
+           request_line->port, request_line->path);
+  }
+  return cache_hit;
+}
+
+static void cache_insert(cache_t *cache, request *request, char *response) {
+  request_line *request_line = &request->line;
+  char match_str[MAXLINE];
+  cache_pair *cache_pair, *oldest_pair;
+  int oldest_time_stamp = 0x7fffffff;
+  int vacancy = 0; // Has vacancy???
+  sprintf(match_str, "%s http://%s:%s%s HTTP/1.0", request_line->method,
+          request_line->host, request_line->port, request_line->path);
+  sem_wait(&cache->mutex);
+  for (int i = 0; i < cache->cache_pair_num; ++i) {
+    cache_pair = cache->cache_set + i;
+    if (!cache_pair->valid) {
+      strcpy(cache_pair->request, match_str);
+      strcpy(cache_pair->response, response);
+      cache_pair->valid = 1;
+      cache_pair->time_stamp = cur_time_stamp++;
+      vacancy = 1;
+      break;
+    }
+    if (oldest_time_stamp > cache_pair->time_stamp) {
+      oldest_time_stamp = cache_pair->time_stamp;
+      oldest_pair = cache_pair;
+    }
+  }
+
+  if (!vacancy) {
+    strcpy(oldest_pair->request, match_str);
+    strcpy(oldest_pair->response, response);
+    oldest_pair->time_stamp = cur_time_stamp++;
+  }
+  sem_post(&cache->mutex);
 }
